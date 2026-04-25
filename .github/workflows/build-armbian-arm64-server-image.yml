@@ -250,6 +250,7 @@ on:
           - 6.12.y_6.18.y
           - 6.1.y_6.12.y
           - 6.1.y_6.18.y
+          - 6.1.141
       kernel_repo:
         description: "Set the kernel repository."
         required: false
