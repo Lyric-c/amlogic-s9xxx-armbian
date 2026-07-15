@@ -47,7 +47,7 @@ env:
 
 jobs:
   build:
-    runs-on: ubuntu-26.04-arm
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
 
@@ -66,7 +66,7 @@ jobs:
           sudo rm -f /swapfile /mnt/swapfile
           sudo apt-get -y update
           sudo apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
-          sudo apt-get -y install $(curl -fsSL https://ophub.org/ubuntu2604-build-armbian-depends)
+          sudo apt-get -y install $(curl -fsSL https://ophub.org/ubuntu2404-build-armbian-depends)
           sudo systemctl daemon-reload
           sudo apt-get -y autoremove --purge
           sudo apt-get clean
@@ -126,39 +126,69 @@ jobs:
           BUILD_TAG="Armbian_${{ inputs.RELEASE }}_arm64_${{ inputs.BUILD_EDITION }}_$(date +'%Y.%m')"
           echo "BUILD_TAG=${BUILD_TAG}" >> "${GITHUB_ENV}"
 
-      - name: Download official Armbian base image
+      - name: Download base Armbian image from ophub Releases
         working-directory: /builder
         run: |
           armbian_buildpath="build/output/images"
           mkdir -p "${armbian_buildpath}"
 
-          # Use Rock-3C official image as base rootfs (same RK3566 SoC)
-          armbian_site="https://armbian.tnahosting.net/dl/rock-3c/archive/"
-          armbian_pattern="Armbian.*${{ inputs.RELEASE }}.*.img.xz"
+          # Search ophub upstream releases for a matching arm64 server image
+          RELEASE_QUERY="${{ inputs.RELEASE }}"
+          echo "Looking for base image with release: ${RELEASE_QUERY}"
 
-          armbian_file=$(curl -s "${armbian_site}" | grep -oE "${armbian_pattern}" | head -n 1)
-          if [[ -z "${armbian_file}" ]]; then
-            echo "No Rock-3C image found, trying odroidn2..."
-            armbian_site="https://armbian.tnahosting.net/dl/odroidn2/archive/"
-            armbian_file=$(curl -s "${armbian_site}" | grep -oE "${armbian_pattern}" | head -n 1)
-          fi
+          # Query ophub upstream releases via GitHub API
+          release_json=$(curl -fsSL \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/ophub/amlogic-s9xxx-armbian/releases?per_page=30")
 
-          if [[ -z "${armbian_file}" ]]; then
-            echo "Error: No base Armbian image found for ${RELEASE}."
+          # Find a release tag containing the target release name, get the latest .img.gz asset
+          asset_url=$(echo "${release_json}" | jq -r \
+            --arg REL "${RELEASE_QUERY}" \
+            '[.[] | select(.tag_name | test($REL; "i"))] |
+             sort_by(.published_at) | reverse | .[0].assets[] |
+             select(.name | endswith(".img.gz")) |
+             .url' | head -1)
+
+          # Get the asset filename from the API response
+          asset_name=$(echo "${release_json}" | jq -r \
+            --arg REL "${RELEASE_QUERY}" \
+            '[.[] | select(.tag_name | test($REL; "i"))] |
+             sort_by(.published_at) | reverse | .[0].assets[] |
+             select(.name | endswith(".img.gz")) |
+             .name' | head -1)
+
+          if [[ -z "${asset_name}" || "${asset_name}" == "null" ]]; then
+            echo "Error: No base image found in ophub releases for ${RELEASE_QUERY}."
             exit 1
           fi
 
-          armbian_url="${armbian_site}${armbian_file}"
-          echo "Downloading base image: ${armbian_url}"
-          wget -q "${armbian_url}" -P "${armbian_buildpath}"
+          # Download the asset via GitHub API (binary stream), keep original name
+          echo "Downloading: ${asset_name}"
+          curl -fsSL \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/octet-stream" \
+            "${asset_url}" \
+            -o "${armbian_buildpath}/${asset_name}"
 
-          # Decompress .xz to .img
-          xz_img="${armbian_buildpath}/${armbian_file}"
-          img_file="${xz_img%.xz}"
-          if [[ -f "${xz_img}" ]]; then
-            xz -d "${xz_img}"
-            echo "Decompressed: ${img_file}"
-          fi
+          # Decompress .gz to .img (rebuild expects *-trunk_*.img)
+          gunzip -f "${armbian_buildpath}/${asset_name}"
+          echo "Base image ready: ${armbian_buildpath}/${asset_name%.gz}"
+
+      - name: Fix model_database.conf kernel tags for Panther X2
+        run: |
+          # Patch Panther X2 entry to use only the single kernel tag matching KERNEL_BRANCH.
+          # This prevents rebuild from trying to download non-existent kernels from the wrong tag.
+          case "${{ inputs.KERNEL_BRANCH }}" in
+            vendor)  NEW_TAG="rk35xx/6.1.y" ;;
+            current) NEW_TAG="stable/6.18.y" ;;
+            edge)    NEW_TAG="stable/7.1.y" ;;
+            *)       NEW_TAG="stable/6.18.y" ;;
+          esac
+          CONF="build-armbian/armbian-files/common-files/etc/model_database.conf"
+          echo "Patching Panther X2 KERNEL_TAGS → ${NEW_TAG}"
+          sed -i "/^r301[[:space:]]*:Panther-X2/ s|:[^:]*\(:rockchip\)|:${NEW_TAG}\1|" "${CONF}"
+          grep 'r301.*Panther' "${CONF}"
 
       - name: Rebuild Armbian for Panther X2
         id: rebuild
@@ -166,8 +196,8 @@ jobs:
           sudo ./rebuild \
             -b panther-x2 \
             -r Lyric-c/panther-x2 \
-            -u "${KERNEL_TAG}" \
             -k "${KERNEL_VER}" \
+            -a true \
             -t "${{ inputs.ROOTFS_TYPE }}" \
             -n "${{ inputs.KERNEL_BRANCH }}"
           echo "status=success" >> "${GITHUB_OUTPUT}"
