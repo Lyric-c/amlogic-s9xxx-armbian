@@ -216,10 +216,11 @@ jobs:
             echo "WARNING: No .img found to verify"
             exit 0
           fi
-          BOOT_OFFSET=$((16 * 2048))  # 16MiB skip for Rockchip
+          BOOT_OFFSET=$((16 * 2048))  # 16MiB skip for Rockchip (in 512-byte sectors)
+          BOOT_BYTES=$((BOOT_OFFSET * 512))
           mkdir -p /tmp/boot-check
-          sudo mount -o loop,offset=$((BOOT_OFFSET * 512)) "${IMG}" /tmp/boot-check 2>/dev/null || {
-            echo "WARNING: Could not mount boot partition (offset=${BOOT_OFFSET})"
+          sudo mount -t vfat -o loop,offset=${BOOT_BYTES} "${IMG}" /tmp/boot-check 2>/dev/null || {
+            echo "WARNING: Could not mount boot partition (bytes offset=${BOOT_BYTES})"
             exit 0
           }
           echo "--- /boot contents ---"
