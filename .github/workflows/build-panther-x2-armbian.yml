@@ -202,6 +202,46 @@ jobs:
             -n "${{ inputs.KERNEL_BRANCH }}"
           echo "status=success" >> "${GITHUB_OUTPUT}"
 
+      - name: Verify boot partition
+        if: ${{ steps.rebuild.outputs.status == 'success' && !cancelled() }}
+        run: |
+          echo "=== Checking boot partition files ==="
+          # Mount the rebuilt image to verify
+          IMG=$(ls build/output/images/Armbian_*.img 2>/dev/null | head -1)
+          if [ -z "${IMG}" ]; then
+            IMG=$(ls build/output/images/Armbian_*.img.gz 2>/dev/null | head -1)
+            [ -n "${IMG}" ] && gunzip -k "${IMG}" && IMG="${IMG%.gz}"
+          fi
+          if [ -z "${IMG}" ]; then
+            echo "WARNING: No .img found to verify"
+            exit 0
+          fi
+          BOOT_OFFSET=$((16 * 2048))  # 16MiB skip for Rockchip
+          mkdir -p /tmp/boot-check
+          sudo mount -o loop,offset=$((BOOT_OFFSET * 512)) "${IMG}" /tmp/boot-check 2>/dev/null || {
+            echo "WARNING: Could not mount boot partition (offset=${BOOT_OFFSET})"
+            exit 0
+          }
+          echo "--- /boot contents ---"
+          ls -la /tmp/boot-check/
+          echo ""
+          echo "--- Checking critical files ---"
+          for f in Image uInitrd boot.scr armbianEnv.txt; do
+            if [ -e "/tmp/boot-check/$f" ]; then
+              echo "  ✓ $f"
+            else
+              echo "  ✗ MISSING: $f"
+            fi
+          done
+          echo "--- DTB check ---"
+          FDTFILE="rockchip/rk3566-panther-x2.dtb"
+          if [ -f "/tmp/boot-check/dtb/${FDTFILE}" ]; then
+            echo "  ✓ dtb/${FDTFILE}"
+          else
+            echo "  ✗ MISSING: dtb/${FDTFILE}"
+          fi
+          sudo umount /tmp/boot-check
+
       - name: Upload Armbian images to Release
         uses: softprops/action-gh-release@v3
         if: ${{ steps.rebuild.outputs.status == 'success' && !cancelled() }}
