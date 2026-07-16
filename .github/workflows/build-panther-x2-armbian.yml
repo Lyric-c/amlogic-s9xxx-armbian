@@ -148,6 +148,7 @@ jobs:
             '[.[] | select(.tag_name | test($REL; "i"))] |
              sort_by(.published_at) | reverse | .[0].assets[] |
              select(.name | endswith(".img.gz")) |
+             select(.name | contains("-trunk_")) |
              .url' | head -1)
 
           # Get the asset filename from the API response
@@ -156,6 +157,7 @@ jobs:
             '[.[] | select(.tag_name | test($REL; "i"))] |
              sort_by(.published_at) | reverse | .[0].assets[] |
              select(.name | endswith(".img.gz")) |
+             select(.name | contains("-trunk_")) |
              .name' | head -1)
 
           if [[ -z "${asset_name}" || "${asset_name}" == "null" ]]; then
